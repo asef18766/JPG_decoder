@@ -4,16 +4,17 @@
 #include<math.h>
 #include<stdlib.h>
 #include<stdbool.h>
+#include<memory.h>
 #include"qdbmp.h"
 #define M_PI 3.14159265358979323846
-const int SOI_MARKER = 0xD8;
-const int APP0_MARKER = 0xE0;
-const int DQT_MARKER = 0xDB;
-const int SOF_MARKER = 0xC0;
-const int DHT_MARKER = 0xC4;
-const int SOS_MARKER = 0xDA;
-const int EOI_MARKER = 0xD9;
-const int COM_MARKER = 0xFE;
+#define SOI_MARKER 0xD8
+#define APP0_MARKER 0xE0
+#define DQT_MARKER 0xDB
+#define SOF_MARKER 0xC0
+#define DHT_MARKER 0xC4
+#define SOS_MARKER 0xDA
+#define EOI_MARKER 0xD9
+#define COM_MARKER 0xFE
 
 struct _IMAGE_{
     int height;
@@ -46,19 +47,46 @@ int quantTable[4][128];
 const int DC = 0;
 const int AC = 1;
 
-//TODO: fix it into array(like map)
-struct _huffTable_
-{
-    unsigned char ;
-    unsigned int  TreeStruct;
-    unsigned char SourceEncode;
-}__attribute__((packed)) huffTable[2][2];
 
 typedef struct _PAIR_
 {
     int first;
     int second;
 }__attribute__((packed)) pair;
+//TODO: fix it into array(like map)
+typedef struct _TABLE_UNIT_
+{
+    unsigned int  Code;
+    unsigned char SourceCode;
+}table_unit;
+
+struct _huffTable_
+{
+    unsigned char child_num[16];
+    table_unit table[17][0xff];
+}__attribute__((packed)) huffTable[2][2];
+bool find(int ACorDC,int id,pair key)
+{
+    for(int u=0;u!=huffTable[ACorDC][id].child_num[key.first];++u)
+    {
+        if(huffTable[ACorDC][id].table[key.first][u].Code==key.second)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+int get_Source(int ACorDC,int id,pair key)
+{
+    for(int u=0;u!=huffTable[ACorDC][id].child_num[key.first];++u)
+    {
+        if(huffTable[ACorDC][id].table[key.first][u].Code==key.second)
+        {
+            return u;
+        }
+    }
+    return -1;
+}
 pair make_pair(int a,int b)
 {
     pair p={a,b};
@@ -211,6 +239,8 @@ void readDHT(FILE *f) {
 
         unsigned char a[16];
         fread(a, 1, 16, f);
+        for(int u=0;u!=16;++u)
+            huffTable[DCorAC][id].child_num[u]=a[u];
         unsigned int number = 0;
         for (int i = 0; i < 16; i++) {
             printf("%d ", a[i]);
@@ -221,9 +251,14 @@ void readDHT(FILE *f) {
         for (int i = 0; i < number; i++) {
             unsigned char v;
             fread(&v, 1, 1, f);
-            //huffTable[DCorAC][id] = v;
+            int child_num=huffTable[DCorAC][id].child_num[huffCode[i].first];
+            int cur_child_num=a[huffCode[i].first];
+
+            huffTable[DCorAC][id].table[huffCode[i].first][cur_child_num-child_num].Code = v;
             printf("%d %d: %d\n", huffCode[i].first, huffCode[i].second, v);
+            a[huffCode[i].first]--;
         }
+        printf("end DHT\n");
         free(huffCode);
 
         len -= (1 + 16 + number);
@@ -270,13 +305,13 @@ unsigned char matchHuff(FILE *f, unsigned char number, unsigned char ACorDC) {
         len = len << 1;
         len += (unsigned int)getBit(f);
 
-        /*
-        if (huffTable[ACorDC][number].find(std::make_pair(count, len)) != huffTable[ACorDC][number].end()) {
-            codeLen = huffTable[ACorDC][number][std::make_pair(count, len)];
+        
+        if (find(ACorDC,number,make_pair(count,len))==true) {
+            codeLen = huffTable[ACorDC][number].table[count][get_Source(ACorDC,number,make_pair(count,len))].SourceCode;
             return codeLen;
-        }*/
+        }
 
-        if (count > 16) {fprintf(stderr, "key not found\n"); count = 1; len = 0;}
+        if (count > 16) {/*fprintf(stderr, "key not found\n");*/ count = 1; len = 0;}
     }
 }
 
@@ -382,6 +417,55 @@ void zigzag(MCU *this) {
         }
     }
 };
+double cc(int i, int j) {
+    if (i == 0 && j == 0) {
+        return 1.0/2.0;
+    } else if (i == 0 || j == 0) {
+        return 1.0/sqrt(2.0);
+    } else {
+        return 1.0;
+    }
+}
+double c(int i) {
+    double x = 1.0/sqrt(2.0);
+    if (i == 0) {
+        return x;
+    } else {
+        return 1.0;
+    }
+}
+unsigned char chomp(double x) {
+    if (x > 255.0) {
+        return 255;
+    } else if (x < 0) {
+        return 0;
+    } else {
+        return (unsigned char) x;
+    }
+}
+double trans(MCU *this,int id, int h, int w) {
+    int vh = h * subVector[id].height / maxHeight;
+    int vw = w * subVector[id].width / maxWidth;
+    return this->mcu[id][vh / 8][vw / 8][vh % 8][vw % 8];
+}
+
+RGB **toRGB(MCU *this) {
+    RGB **ret = (RGB **)malloc(sizeof(RGB **) * maxHeight * 8);
+    for (int i = 0; i < maxHeight * 8; i++) {
+        ret[i] = (RGB *)malloc(sizeof(RGB *) * maxWidth * 8);
+    }
+    for (int i = 0; i < maxHeight * 8; i++) {
+        for (int j = 0; j < maxWidth * 8; j++) {
+            double Y = trans(this,1, i, j);
+            double Cb = trans(this,2, i, j);
+            double Cr = trans(this,3, i, j);
+            ret[i][j].R = chomp(Y + 1.402*Cr + 128);
+            ret[i][j].G = chomp(Y - 0.34414*Cb - 0.71414*Cr + 128);
+            ret[i][j].B = chomp(Y + 1.772*Cb + 128);
+        }
+    }
+    return ret;
+}
 void idct(MCU *this) {
     for (int id = 1; id <= 3; id++) {
         for (int h = 0; h < subVector[id].height; h++) {
@@ -429,54 +513,6 @@ void decode(MCU *this) {
     quantify(this);
     zigzag(this);
     idct(this);
-}
-RGB **toRGB(MCU *this) {
-    RGB **ret = (RGB **)malloc(sizeof(RGB **) * maxHeight * 8);
-    for (int i = 0; i < maxHeight * 8; i++) {
-        ret[i] = (RGB *)malloc(sizeof(RGB *) * maxWidth * 8);
-    }
-    for (int i = 0; i < maxHeight * 8; i++) {
-        for (int j = 0; j < maxWidth * 8; j++) {
-            double Y = trans(1, i, j,this);
-            double Cb = trans(2, i, j,this);
-            double Cr = trans(3, i, j,this);
-            ret[i][j].R = chomp(Y + 1.402*Cr + 128);
-            ret[i][j].G = chomp(Y - 0.34414*Cb - 0.71414*Cr + 128);
-            ret[i][j].B = chomp(Y + 1.772*Cb + 128);
-        }
-    }
-    return ret;
-}
-double cc(int i, int j) {
-    if (i == 0 && j == 0) {
-        return 1.0/2.0;
-    } else if (i == 0 || j == 0) {
-        return 1.0/sqrt(2.0);
-    } else {
-        return 1.0;
-    }
-}
-double c(int i) {
-    double x = 1.0/sqrt(2.0);
-    if (i == 0) {
-        return x;
-    } else {
-        return 1.0;
-    }
-}
-unsigned char chomp(double x) {
-    if (x > 255.0) {
-        return 255;
-    } else if (x < 0) {
-        return 0;
-    } else {
-        return (unsigned char) x;
-    }
-}
-double trans(MCU *this,int id, int h, int w) {
-    int vh = h * subVector[id].height / maxHeight;
-    int vw = w * subVector[id].width / maxWidth;
-    return this->mcu[id][vh / 8][vw / 8][vh % 8][vw % 8];
 }
 
 MCU readMCU(FILE *f) {
