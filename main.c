@@ -53,7 +53,6 @@ typedef struct _PAIR_
     int first;
     int second;
 }__attribute__((packed)) pair;
-//TODO: fix it into array(like map)
 typedef struct _TABLE_UNIT_
 {
     unsigned int  Code;
@@ -62,9 +61,22 @@ typedef struct _TABLE_UNIT_
 
 struct _huffTable_
 {
-    unsigned char child_num[16];
+    unsigned char child_num[17];
     table_unit table[17][0xff];
 }__attribute__((packed)) huffTable[2][2];
+//for debug
+void printhuff(int ACorDC,int id)
+{
+    printf("////////////////////////\n");
+    printf("print huff %s %d:\n",((ACorDC==AC)? "AC":"DC"),id);
+    for(int j=1;j<=16;++j,printf("\n"))
+    {
+        printf("--%d--\n",j);
+        for(int u=0;huffTable[ACorDC][id].child_num[j];++u)
+            printf("%d\n",huffTable[ACorDC][id].table[j][u]);
+    }
+    printf("////////////////////////\n");
+}
 bool find(int ACorDC,int id,pair key)
 {
     for(int u=0;u!=huffTable[ACorDC][id].child_num[key.first];++u)
@@ -101,9 +113,6 @@ void init_cos_cache() {
     }
 }
 
-
-// 讀取 Section 用之輔助函式
-
 void showSectionName(const char *s) {
     printf("************************ %s **************************\n", s);
     return;
@@ -125,8 +134,6 @@ unsigned int EnterNewSection(FILE *f, const char *s) {
     printf("本區段長度為 %d\n", len);
     return len;
 }
-
-// 讀取各 Section 之函式
 
 void readCOM(FILE *f) {
     unsigned int len = EnterNewSection(f, "COM");
@@ -191,12 +198,11 @@ void readSOF(FILE *f) {
     fseek(f, 1, SEEK_CUR); // 精度
     unsigned char v[3];
     fread(v, 1, 2, f);
-    // TODO: 高度跟寬度不確定
     image.height = v[0] * 256 + v[1];
     fread(v, 1, 2, f);
     image.width = v[0] * 256 + v[1];
     printf("高*寬: %d*%d\n", image.height, image.width);
-    fseek(f, 1, SEEK_CUR); // 顏色分量數，固定為3
+    fseek(f, 1, SEEK_CUR); 
     for (int i = 0; i < 3; i++) {
         fread(v, 1, 3, f);
         printf("顏色分量ID：%d\n", v[0]);
@@ -239,26 +245,32 @@ void readDHT(FILE *f) {
 
         unsigned char a[16];
         fread(a, 1, 16, f);
-        for(int u=0;u!=16;++u)
-            huffTable[DCorAC][id].child_num[u]=a[u];
+        for(int u=1;u!=17;++u)
+            huffTable[DCorAC][id].child_num[u]=a[u-1];
+        
         unsigned int number = 0;
         for (int i = 0; i < 16; i++) {
-            printf("%d ", a[i]);
+            printf("%d ",a[i]);
             number += a[i];
-        }
-        printf("\n");
+        }printf("\n");
+        
         pair* huffCode = createHuffCode(a, number);
         for (int i = 0; i < number; i++) {
             unsigned char v;
             fread(&v, 1, 1, f);
             int child_num=huffTable[DCorAC][id].child_num[huffCode[i].first];
-            int cur_child_num=a[huffCode[i].first];
+            int cur_child_num=a[huffCode[i].first-1];
 
-            huffTable[DCorAC][id].table[huffCode[i].first][cur_child_num-child_num].Code = v;
+            huffTable[DCorAC][id].table[huffCode[i].first][child_num-cur_child_num].SourceCode = v;
+            huffTable[DCorAC][id].table[huffCode[i].first][child_num-cur_child_num].Code=huffCode[i].second;
+            
             printf("%d %d: %d\n", huffCode[i].first, huffCode[i].second, v);
-            a[huffCode[i].first]--;
+            printf("child_num:%d\n",child_num);
+            printf("cur_child_num:%d\n",cur_child_num);
+            printf("huffTable:%d %d %d\n",huffCode[i].first,child_num-cur_child_num,huffTable[DCorAC][id].table[huffCode[i].first][child_num-cur_child_num].SourceCode);
+            a[huffCode[i].first-1]--;
         }
-        printf("end DHT\n");
+
         free(huffCode);
 
         len -= (1 + 16 + number);
@@ -267,7 +279,7 @@ void readDHT(FILE *f) {
 void readSOS(FILE *f) {
     unsigned int len = EnterNewSection(f, "SOS");
 
-    fseek(f, 1, SEEK_CUR);   // 顏色分量數，固定為3
+    fseek(f, 1, SEEK_CUR);
     for (int i = 0; i < 3; i++) {
         unsigned char v[1];
         fread(v, 1, 1, f);
@@ -278,8 +290,7 @@ void readSOS(FILE *f) {
     }
     fseek(f, 3, SEEK_CUR);
 }
-
-// 必須連續呼叫getBit，中間被fread斷掉就會出問題
+//get one bit by every call
 bool getBit(FILE *f) {
     static unsigned char buf;
     static unsigned char count = 0;
@@ -289,7 +300,7 @@ bool getBit(FILE *f) {
             unsigned char check;
             fread(&check, 1, 1, f);
             if (check != 0x00) {
-                fprintf(stderr, "data 段有不是 0xFF00 的數據");
+                fprintf(stderr, "data segment fault(detect with data not 0xFF00)");
             }
         }
     }
@@ -323,14 +334,14 @@ int readDC(FILE *f, unsigned char number) {
     for (int i = 1; i < codeLen; i++) {
         unsigned char b = getBit(f);
         ret = ret << 1;
-        ret += first ? b : !b;
+        ret += (first ? b : !b);
     }
-    ret = first ? ret : -ret;
+    ret = (first ? ret : -ret);
 //    printf("read DC: len %d, value %d\n", codeLen, ret);
     return ret;
 }
 
-// 計算ZRL
+// cal ZRL
 acCode readAC(FILE *f, unsigned char number) {
     unsigned char x = matchHuff(f, number, AC);
     unsigned char zeros = x >> 4;
@@ -359,7 +370,7 @@ typedef struct _MCU_
 {
     BLOCK mcu[4][2][2];
 }__attribute__((packed)) MCU;
-// 除錯用
+// for debug
 void show(MCU *this) {
     printf("*************** mcu show ***********************\n");
     for (int id = 1; id <= 3; id++) {
@@ -551,7 +562,6 @@ MCU readMCU(FILE *f) {
     }
     return mcu;
 }
-
 void readData(FILE *f) {
     printf("************************* test read data **********************************\n");
     int w = (image.width - 1) / (8*maxWidth) + 1;
@@ -623,18 +633,18 @@ void readStream(FILE *f) {
         fread(&c, 1, 1, f);
     }
     if (fread(&c, 1, 1, f) != 0) {
-        fprintf(stderr, "沒有吃完就結束\n");
+        fprintf(stderr, "data do not process fully\n");
     }
 }
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
-        fprintf(stderr, "用法：jpeg_decoder <jpeg file>\n");
+        fprintf(stderr, "usage：jpeg_decoder <jpeg file>\n");
         return 1;
     }
     FILE *f = fopen(argv[1], "r");
     if (f == NULL) {
-        fprintf(stderr, "檔案開啟失敗\n");
+        fprintf(stderr, "can not open %s!!\n",argv[1]);
     }
     init_cos_cache();
     readStream(f);
